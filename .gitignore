@@ -13,6 +13,4 @@ Thumbs.db
 
 # Inputs/outputs for migration runs
 migration_output/
-access_databases/*.accdb
-access_databases/*.mdb
-!access_databases/.gitkeep
+access_databases/
