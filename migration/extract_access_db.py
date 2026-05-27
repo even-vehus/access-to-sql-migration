@@ -11,6 +11,7 @@ import csv
 import json
 import os
 import re
+import time
 from collections import deque
 from datetime import date, datetime
 from decimal import Decimal
@@ -69,7 +70,23 @@ def get_connection(db_path: Path):
         r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};"
         f"DBQ={db_path};"
     )
-    return pyodbc.connect(conn_str)
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            return pyodbc.connect(conn_str)
+        except (pyodbc.Error, SystemError) as exc:
+            last_exc = exc
+            if attempt < 3:
+                wait_seconds = 0.5 * attempt
+                print(
+                    f"  [connect retry {attempt}/3] Access driver was busy/unavailable; retrying in {wait_seconds:.1f}s..."
+                )
+                time.sleep(wait_seconds)
+
+    raise RuntimeError(
+        f"Failed to connect to Access database after 3 attempts: {db_path}\n"
+        "Close Access/Office processes locking the file and try again."
+    ) from last_exc
 
 
 def get_adox_schema(db_path: Path) -> dict:
