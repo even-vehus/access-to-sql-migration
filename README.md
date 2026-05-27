@@ -7,7 +7,7 @@ This repo intentionally excludes frontend/backend application code.
 ## Folder Structure
 
 ```text
-northwind-migration-tools/
+migration-tools/
   access_databases/      # Put source Access files here
   migration/             # Extraction script
     extract_access_db.py
