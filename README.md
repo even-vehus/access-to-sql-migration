@@ -101,18 +101,18 @@ Verify `sqlcmd` is installed:
 sqlcmd -?
 ```
 
-Run the generated scripts (example shown for `Northwind`):
+Run the generated scripts (replace `<YourDatabase>` with your extracted folder name):
 
 ```powershell
-sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\Northwind\01_create_tables.sql"
-sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\Northwind\04_insert_data.sql"
-sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\Northwind\03_indexes.sql"
+sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\<YourDatabase>\01_create_tables.sql"
+sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\<YourDatabase>\04_insert_data.sql"
+sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\<YourDatabase>\03_indexes.sql"
 ```
 
 If foreign keys were generated:
 
 ```powershell
-sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\Northwind\02_foreign_keys.sql"
+sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\<YourDatabase>\02_foreign_keys.sql"
 ```
 
 ## Notes
