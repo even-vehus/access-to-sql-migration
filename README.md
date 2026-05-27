@@ -44,12 +44,18 @@ pip install -r requirements.txt
 
 ## Usage
 
-1. Place your Access file in `access_databases/` (any `.accdb`/`.mdb` name).
-2. Run extraction (auto-selects the only Access file in `access_databases/`):
+1. Place one or more Access files in `access_databases/` (any `.accdb`/`.mdb` names).
+2. Run extraction:
 
 ```powershell
 python .\migration\extract_access_db.py
 ```
+
+Behavior:
+
+- If there is one Access file, it is auto-selected.
+- If there are multiple Access files, each one is processed into its own folder under `migration_output/<DatabaseName>/`.
+- Use `--db-name` or `--db-path` to process just one database.
 
 Or specify a file name explicitly:
 
@@ -68,6 +74,8 @@ Custom output directory:
 ```powershell
 python .\migration\extract_access_db.py --db-name YourDatabase.accdb --output-dir .\migration_output\YourDatabase
 ```
+
+If multiple databases are processed in one run, `--output-dir` is treated as the base output folder and each database gets its own subfolder under it.
 
 ## Notes
 

@@ -44,7 +44,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Access file name inside --access-dir when --db-path is not provided. "
-            "If omitted, the script auto-selects the only .accdb/.mdb in --access-dir."
+            "If omitted, the script auto-selects the only .accdb/.mdb in --access-dir, "
+            "or processes all of them into separate output folders."
         ),
     )
     parser.add_argument(
@@ -55,7 +56,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         default=None,
-        help="Output directory for generated files (default: ./migration_output/<db_name_without_ext>)",
+        help=(
+            "Output directory for generated files (default: ./migration_output/<db_name_without_ext>). "
+            "When multiple databases are processed, each database is written to a subfolder under this path."
+        ),
     )
     return parser.parse_args()
 
@@ -428,46 +432,45 @@ def export_table_csv(table_name: str, col_descs, rows, output_dir: Path):
             )
 
 
-def main():
-    args = parse_args()
-    script_dir = Path(__file__).resolve().parent
-    repo_root = script_dir.parent
-
-    access_dir = Path(args.access_dir).resolve()
-    access_dir.mkdir(parents=True, exist_ok=True)
-
+def resolve_db_paths(args: argparse.Namespace, access_dir: Path) -> list[Path]:
     if args.db_path:
-        db_path = Path(args.db_path).resolve()
-    elif args.db_name:
-        db_path = (access_dir / args.db_name).resolve()
-    else:
-        candidates = sorted(
-            [
-                p
-                for p in access_dir.iterdir()
-                if p.is_file() and p.suffix.lower() in {".accdb", ".mdb"}
-            ]
+        return [Path(args.db_path).resolve()]
+
+    if args.db_name:
+        return [(access_dir / args.db_name).resolve()]
+
+    candidates = sorted(
+        [
+            p.resolve()
+            for p in access_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in {".accdb", ".mdb"}
+        ]
+    )
+    if len(candidates) == 1:
+        print(f"Auto-selected database: {candidates[0].name}")
+        return candidates
+
+    if len(candidates) == 0:
+        raise FileNotFoundError(
+            f"No .accdb/.mdb file found in: {access_dir}\n"
+            "Put your Access file there, or pass --db-name/--db-path explicitly."
         )
-        if len(candidates) == 1:
-            db_path = candidates[0].resolve()
-            print(f"Auto-selected database: {db_path.name}")
-        elif len(candidates) == 0:
-            raise FileNotFoundError(
-                f"No .accdb/.mdb file found in: {access_dir}\n"
-                "Put your Access file there, or pass --db-name/--db-path explicitly."
-            )
-        else:
-            names = "\n".join(f"  - {p.name}" for p in candidates)
-            raise ValueError(
-                "Multiple Access files found. Specify one with --db-name or --db-path:\n"
-                f"{names}"
-            )
 
-    if args.output_dir:
-        output_dir = Path(args.output_dir).resolve()
-    else:
-        output_dir = (repo_root / "migration_output" / db_path.stem).resolve()
+    print(f"Found {len(candidates)} Access files. Processing each into its own output folder.")
+    for candidate in candidates:
+        print(f"  - {candidate.name}")
+    return candidates
 
+
+def resolve_output_dir(repo_root: Path, output_dir_arg: str | None, db_path: Path, multi_db: bool) -> Path:
+    if output_dir_arg:
+        base_output_dir = Path(output_dir_arg).resolve()
+        return (base_output_dir / db_path.stem).resolve() if multi_db else base_output_dir
+
+    return (repo_root / "migration_output" / db_path.stem).resolve()
+
+
+def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
     if not db_path.exists():
         raise FileNotFoundError(
             f"Access file not found: {db_path}\n"
@@ -670,6 +673,21 @@ def main():
         if p.is_file():
             size = p.stat().st_size
             print(f"  {p.relative_to(output_dir)}  ({size:,} bytes)")
+
+
+def main():
+    args = parse_args()
+    script_dir = Path(__file__).resolve().parent
+    repo_root = script_dir.parent
+
+    access_dir = Path(args.access_dir).resolve()
+    access_dir.mkdir(parents=True, exist_ok=True)
+
+    db_paths = resolve_db_paths(args, access_dir)
+    multi_db = len(db_paths) > 1
+    for db_path in db_paths:
+        output_dir = resolve_output_dir(repo_root, args.output_dir, db_path, multi_db)
+        extract_database(db_path, output_dir, access_dir)
 
 
 if __name__ == "__main__":
