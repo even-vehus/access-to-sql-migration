@@ -1,4 +1,4 @@
-# Northwind Migration Tools
+# Migration Tools
 
 Migration-only toolkit for extracting schema and data from Microsoft Access (`.accdb` / `.mdb`) and generating SQL-ready artifacts.
 
