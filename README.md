@@ -11,7 +11,7 @@ northwind-migration-tools/
   access_databases/      # Put source Access files here
   migration/             # Extraction script
     extract_access_db.py
-  migration_output/      # Generated SQL, CSV, and schema files
+  migration_output/      # Generated SQL, CSV, and schema files (git-ignored)
   requirements.txt
 ```
 
@@ -44,11 +44,17 @@ pip install -r requirements.txt
 
 ## Usage
 
-1. Place your Access file in `access_databases/` (for example `Northwind.accdb`).
-2. Run extraction:
+1. Place your Access file in `access_databases/` (any `.accdb`/`.mdb` name).
+2. Run extraction (auto-selects the only Access file in `access_databases/`):
 
 ```powershell
-python .\migration\extract_access_db.py --db-name Northwind.accdb
+python .\migration\extract_access_db.py
+```
+
+Or specify a file name explicitly:
+
+```powershell
+python .\migration\extract_access_db.py --db-name YourDatabase.accdb
 ```
 
 Alternative explicit path:
@@ -60,7 +66,7 @@ python .\migration\extract_access_db.py --db-path "C:\path\to\database.accdb"
 Custom output directory:
 
 ```powershell
-python .\migration\extract_access_db.py --db-name Northwind.accdb --output-dir .\migration_output\Northwind
+python .\migration\extract_access_db.py --db-name YourDatabase.accdb --output-dir .\migration_output\YourDatabase
 ```
 
 ## Notes
@@ -70,5 +76,7 @@ python .\migration\extract_access_db.py --db-name Northwind.accdb --output-dir .
 
 ```powershell
 $env:ACCESS_USE_ADOX = "1"
-python .\migration\extract_access_db.py --db-name Northwind.accdb
+python .\migration\extract_access_db.py --db-name YourDatabase.accdb
 ```
+
+- `migration_output/` is intentionally not version-controlled because it contains run-specific generated artifacts.

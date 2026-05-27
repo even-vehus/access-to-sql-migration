@@ -41,8 +41,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--db-name",
-        default="Northwind.accdb",
-        help="Access file name inside --access-dir when --db-path is not provided",
+        default=None,
+        help=(
+            "Access file name inside --access-dir when --db-path is not provided. "
+            "If omitted, the script auto-selects the only .accdb/.mdb in --access-dir."
+        ),
     )
     parser.add_argument(
         "--db-path",
@@ -435,8 +438,30 @@ def main():
 
     if args.db_path:
         db_path = Path(args.db_path).resolve()
-    else:
+    elif args.db_name:
         db_path = (access_dir / args.db_name).resolve()
+    else:
+        candidates = sorted(
+            [
+                p
+                for p in access_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in {".accdb", ".mdb"}
+            ]
+        )
+        if len(candidates) == 1:
+            db_path = candidates[0].resolve()
+            print(f"Auto-selected database: {db_path.name}")
+        elif len(candidates) == 0:
+            raise FileNotFoundError(
+                f"No .accdb/.mdb file found in: {access_dir}\n"
+                "Put your Access file there, or pass --db-name/--db-path explicitly."
+            )
+        else:
+            names = "\n".join(f"  - {p.name}" for p in candidates)
+            raise ValueError(
+                "Multiple Access files found. Specify one with --db-name or --db-path:\n"
+                f"{names}"
+            )
 
     if args.output_dir:
         output_dir = Path(args.output_dir).resolve()
