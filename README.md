@@ -75,6 +75,46 @@ python .\migration\extract_access_db.py --db-name YourDatabase.accdb --output-di
 
 If multiple databases are processed in one run, `--output-dir` is treated as the base output folder and each database gets its own subfolder under it.
 
+## Recreate Tables in Fabric SQL Database
+
+This project is designed for **Microsoft Fabric SQL Database**.
+
+1. In Fabric, create a SQL Database in your workspace.
+2. Open its SQL connection endpoint details.
+3. Pick the matching extracted folder under `migration_output/<DatabaseName>/`.
+4. Run scripts in this order:
+
+- `01_create_tables.sql` (create schema)
+- `04_insert_data.sql` (load rows)
+- `03_indexes.sql` (create indexes)
+- `02_foreign_keys.sql` (optional, run last if generated)
+
+### Option A: Run in Fabric Query Editor
+
+Paste and execute the scripts in the order above.
+
+### Option B: Run with sqlcmd
+
+Verify `sqlcmd` is installed:
+
+```powershell
+sqlcmd -?
+```
+
+Run the generated scripts (example shown for `Northwind`):
+
+```powershell
+sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\Northwind\01_create_tables.sql"
+sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\Northwind\04_insert_data.sql"
+sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\Northwind\03_indexes.sql"
+```
+
+If foreign keys were generated:
+
+```powershell
+sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\Northwind\02_foreign_keys.sql"
+```
+
 ## Notes
 
 - By default ADOX is disabled to avoid COM/OLEDB stability issues.
