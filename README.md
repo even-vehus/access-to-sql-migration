@@ -1,8 +1,6 @@
 # Migration Tools
 
-Migration-only toolkit for extracting schema and data from Microsoft Access (`.accdb` / `.mdb`) and generating SQL-ready artifacts.
-
-This repo intentionally excludes frontend/backend application code.
+Migration toolkit for extracting schema and data from Microsoft Access (`.accdb` / `.mdb`) and generating SQL-ready artifacts.
 
 ## Folder Structure
 
