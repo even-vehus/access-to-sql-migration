@@ -6,9 +6,9 @@ Migration toolkit for extracting schema and data from Microsoft Access (`.accdb`
 
 ```text
 migration-tools/
-  access_databases/      # Put source Access files here
-  migration/             # Extraction script
-    extract_access_db.py
+  access_databases/      # Put Access files here
+  migration/             
+    extract_access_db.py # Extraction script
   migration_output/      # Generated SQL, CSV, and schema files (git-ignored)
   requirements.txt
 ```
@@ -101,7 +101,7 @@ Verify `sqlcmd` is installed:
 sqlcmd -?
 ```
 
-Run the generated scripts (replace `<YourDatabase>` with your extracted folder name):
+Run the generated scripts (`<database-name>` is the name of the Fabric SQL database. `<YourDatabase>` is the name of your extracted folder):
 
 ```powershell
 sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\<YourDatabase>\01_create_tables.sql"
@@ -109,7 +109,7 @@ sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password
 sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\<YourDatabase>\03_indexes.sql"
 ```
 
-If foreign keys were generated:
+If foreign keys were generated, also run:
 
 ```powershell
 sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\<YourDatabase>\02_foreign_keys.sql"
@@ -124,5 +124,3 @@ sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password
 $env:ACCESS_USE_ADOX = "1"
 python .\migration\extract_access_db.py --db-name YourDatabase.accdb
 ```
-
-- `migration_output/` is intentionally not version-controlled because it contains run-specific generated artifacts.
