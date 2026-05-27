@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Inputs/outputs for migration runs
+migration_output/*
+!migration_output/.gitkeep
+access_databases/*.accdb
+access_databases/*.mdb
+!access_databases/.gitkeep
