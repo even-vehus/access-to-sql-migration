@@ -89,33 +89,7 @@ This project is designed for **Microsoft Fabric SQL Database**.
 - `03_indexes.sql` (create indexes)
 - `02_foreign_keys.sql` (optional, run last if generated)
 
-### Option A: Run in Fabric Query Editor
-
-Paste and execute the scripts in the order above.
-
-### Option B: Run with sqlcmd
-
-Verify `sqlcmd` is installed:
-
-```powershell
-sqlcmd -?
-```
-
-Run the generated scripts (`<database-name>` is the name of the Fabric SQL database. `<YourDatabase>` is the name of your extracted folder):
-
-```powershell
-sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\<YourDatabase>\01_create_tables.sql"
-sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\<YourDatabase>\04_insert_data.sql"
-sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\<YourDatabase>\03_indexes.sql"
-```
-
-If foreign keys were generated, also run:
-
-```powershell
-sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\<YourDatabase>\02_foreign_keys.sql"
-```
-
-### Option C: Automated deploy script
+### Automated deploy script
 
 Use the included deploy helper to run the generated scripts in the correct order and support passwordless Entra (Azure) sign-in.
 
@@ -124,20 +98,9 @@ Examples (run from the repo root using the project venv Python):
 Dry run — show commands without executing:
 
 ```powershell
-& .\.venv\Scripts\python.exe deploy\push_to_fabric.py \
-  --server "<fabric-endpoint>" \
-  --database "<database-name>" \
-  --db-name "<YourDatabase>" \
-  --dry-run
-```
-
-Interactive deploy (passwordless Entra login; may open browser for sign-in):
-
-```powershell
-& .\.venv\Scripts\python.exe deploy\push_to_fabric.py \
-  --server "<fabric-endpoint>" \
-  --database "<database-name>" \
-  --db-name "<YourDatabase>"
+python deploy/push_to_fabric.py `
+  --connection-string "<connection-string>" `
+  --db-name <local-database-name> `
 ```
 
 Options of note:
@@ -148,12 +111,3 @@ Options of note:
 See `deploy/push_to_fabric.py` for full flags and behavior.
 
 
-## Notes
-
-- By default ADOX is disabled to avoid COM/OLEDB stability issues.
-- To enable ADOX on a machine where it is stable:
-
-```powershell
-$env:ACCESS_USE_ADOX = "1"
-python .\migration\extract_access_db.py --db-name YourDatabase.accdb
-```
