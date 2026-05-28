@@ -222,6 +222,54 @@ def _strip_order_by_if_no_top(sql: str) -> str:
     return sql[:last_pos].rstrip() if last_pos >= 0 else sql
 
 
+def _convert_access_operators(sql: str) -> str:
+    """
+    Character-level scan to convert Access-specific operators:
+      - Double-quoted literals "..." → single-quoted T-SQL strings 'safe''quote'
+      - Access concatenation operator & → + (only outside string literals)
+    """
+    out: list[str] = []
+    i, n = 0, len(sql)
+    while i < n:
+        c = sql[i]
+        if c == '"':
+            # Read Access double-quoted string literal → convert to single-quoted
+            j = i + 1
+            buf: list[str] = []
+            while j < n and sql[j] != '"':
+                ch = sql[j]
+                if ch == "'":
+                    buf.append("''")  # escape single quotes for T-SQL
+                else:
+                    buf.append(ch)
+                j += 1
+            out.append("'" + "".join(buf) + "'")
+            i = j + 1
+        elif c == "'":
+            # Pass through existing single-quoted strings unchanged (handle '' escapes)
+            out.append(c)
+            j = i + 1
+            while j < n:
+                out.append(sql[j])
+                if sql[j] == "'":
+                    j += 1
+                    if j < n and sql[j] == "'":
+                        out.append("'")
+                        j += 1
+                    else:
+                        break
+                else:
+                    j += 1
+            i = j
+        elif c == '&':
+            out.append(' + ')
+            i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def access_sql_to_tsql(sql: str) -> tuple[str, list[str]]:
     """
     Best-effort conversion of Access SQL to T-SQL for SQL Server / Fabric SQL.
@@ -232,7 +280,10 @@ def access_sql_to_tsql(sql: str) -> tuple[str, list[str]]:
     # 1. Replace Access ! field-separator with .  (preserve != operator)
     sql = re.sub(r"!(?!=)", ".", sql)
 
-    # 2. PlainText(expr) — custom Access VBA function; use expr directly
+    # 2. Convert double-quoted string literals → single-quoted, and & → + (outside strings)
+    sql = _convert_access_operators(sql)
+
+    # 3. PlainText(expr) — custom Access VBA function; use expr directly
     sql = re.sub(r"\bPlainText\s*\(([^)]+)\)", r"\1", sql, flags=re.IGNORECASE)
 
     # 3. Trim$(expr) → TRIM(expr)
@@ -638,31 +689,37 @@ def build_insert_sql(table_name: str, col_descs, rows, has_identity: bool = Fals
     if not rows:
         return []
 
+    tbl = sanitize_identifier(table_name)
     col_names = ", ".join(sanitize_identifier(d[0]) for d in col_descs)
-    statements = []
 
     inserts = []
     for row in rows:
         values = ", ".join(escape_sql_string(v) for v in row)
         inserts.append(f"    ({values})")
 
-    prefix = []
-    suffix = []
+    inner_lines: list[str] = []
     if has_identity:
-        prefix = [f"SET IDENTITY_INSERT {sanitize_identifier(table_name)} ON;"]
-        suffix = [f"SET IDENTITY_INSERT {sanitize_identifier(table_name)} OFF;"]
+        inner_lines.append(f"    SET IDENTITY_INSERT {tbl} ON;")
 
     batch_size = 1000
     for i in range(0, len(inserts), batch_size):
         batch = inserts[i : i + batch_size]
         sql = (
-            f"INSERT INTO {sanitize_identifier(table_name)} ({col_names})\nVALUES\n"
-            + ",\n".join(batch)
+            f"    INSERT INTO {tbl} ({col_names})\n    VALUES\n"
+            + ",\n".join(f"    {v}" for v in batch)
             + ";"
         )
-        statements.append(sql)
+        inner_lines.append(sql)
 
-    return prefix + statements + suffix
+    if has_identity:
+        inner_lines.append(f"    SET IDENTITY_INSERT {tbl} OFF;")
+
+    block = (
+        f"IF NOT EXISTS (SELECT 1 FROM {tbl})\nBEGIN\n"
+        + "\n".join(inner_lines)
+        + "\nEND"
+    )
+    return [block]
 
 
 def export_table_csv(table_name: str, col_descs, rows, output_dir: Path):
@@ -799,18 +856,23 @@ def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
         for fk in foreign_keys:
             constraint_name = fk["fk_name"] or f"FK_{table_name}_{fk['fk_column']}"
             fk_sql = (
-                f"ALTER TABLE {sanitize_identifier(table_name)}\n"
-                f"  ADD CONSTRAINT {sanitize_identifier(constraint_name)}\n"
-                f"  FOREIGN KEY ({sanitize_identifier(fk['fk_column'])})\n"
-                f"  REFERENCES {sanitize_identifier(fk['pk_table'])} ({sanitize_identifier(fk['pk_column'])});"
+                f"IF NOT EXISTS (\n"
+                f"    SELECT 1 FROM sys.foreign_keys\n"
+                f"    WHERE name = N'{constraint_name}' AND parent_object_id = OBJECT_ID(N'{sanitize_identifier(table_name)}')\n"
+                f")\n"
+                f"    ALTER TABLE {sanitize_identifier(table_name)}\n"
+                f"      ADD CONSTRAINT {sanitize_identifier(constraint_name)}\n"
+                f"      FOREIGN KEY ({sanitize_identifier(fk['fk_column'])})\n"
+                f"      REFERENCES {sanitize_identifier(fk['pk_table'])} ({sanitize_identifier(fk['pk_column'])});"
             )
             fk_statements.append(fk_sql)
 
         col_type_map = {col["name"]: access_type_to_tsql(col) for col in columns}
+        col_nullable_map = {col["name"]: col.get("nullable", True) for col in columns}
 
-        pk_index_names = {f"PK_{table_name}"}
         for idx in indexes:
-            if idx["name"] in pk_index_names:
+            # Skip primary-key indexes — already created via CONSTRAINT in CREATE TABLE
+            if idx.get("primary") or idx["name"] in (f"PK_{table_name}", "PrimaryKey"):
                 continue
             if not idx["columns"]:
                 continue
@@ -828,9 +890,23 @@ def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
                 continue
             unique_kw = "UNIQUE " if idx["unique"] else ""
             cols = ", ".join(sanitize_identifier(c) for c in idx["columns"])
+            # Access allows multiple NULLs in a unique index; SQL Server does not.
+            # Use a filtered index (WHERE col IS NOT NULL) to match Access semantics.
+            where_clause = ""
+            if idx["unique"]:
+                nullable_idx_cols = [c for c in idx["columns"] if col_nullable_map.get(c, True)]
+                if nullable_idx_cols:
+                    conditions = " AND ".join(
+                        f"{sanitize_identifier(c)} IS NOT NULL" for c in nullable_idx_cols
+                    )
+                    where_clause = f"\n  WHERE {conditions}"
             idx_sql = (
-                f"CREATE {unique_kw}INDEX {sanitize_identifier(idx['name'])}\n"
-                f"  ON {sanitize_identifier(table_name)} ({cols});"
+                f"IF NOT EXISTS (\n"
+                f"    SELECT 1 FROM sys.indexes\n"
+                f"    WHERE name = N'{idx['name']}' AND object_id = OBJECT_ID(N'{sanitize_identifier(table_name)}')\n"
+                f")\n"
+                f"    CREATE {unique_kw}INDEX {sanitize_identifier(idx['name'])}\n"
+                f"      ON {sanitize_identifier(table_name)} ({cols}){where_clause};"
             )
             index_statements.append(idx_sql)
 
@@ -921,7 +997,9 @@ def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
                 "-- Views referencing Access form controls are commented out below.\n\n"
             )
             for q in sorted_views:
-                if re.search(r"\[forms\]", q["sql"], re.IGNORECASE):
+                # Skip views that reference Access runtime objects (form controls, subforms, reports, etc.)
+                # Matches [Forms], [Form], [Parent], [Reports], [Report], [TempVars], [Me]
+                if re.search(r"\[(forms?|parent|reports?|tempvars|me)\]", q["sql"], re.IGNORECASE):
                     f.write(
                         f"-- SKIPPED: {q['name']}\n"
                         "-- Reason: references Access form controls — cannot be a SQL view.\n"
@@ -935,7 +1013,7 @@ def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
                 f.write(f"-- Query type: {q['type_name']}\n")
                 for note in conv_notes:
                     f.write(f"-- Note: {note}\n")
-                f.write(f"CREATE VIEW {sanitize_identifier(q['name'])} AS\n")
+                f.write(f"CREATE OR ALTER VIEW {sanitize_identifier(q['name'])} AS\n")
                 f.write(converted_sql)
                 if not converted_sql.endswith(";"):
                     f.write(";")

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -211,14 +212,26 @@ def run_plan(
     dry_run: bool,
 ) -> None:
     base_cmd = [sqlcmd_path, "-S", server, "-d", database, "-b", "-I"] + auth_args
+    base_cmd_no_abort = [sqlcmd_path, "-S", server, "-d", database, "-I"] + auth_args
     hide_password = "-P" in auth_args
+
+    # Views are deployed best-effort: each view is executed individually so one
+    # failure (e.g. VBA custom function) doesn't block the remaining views.
+    BEST_EFFORT_SCRIPTS = {"05_views.sql"}
 
     if dry_run:
         print("DRY RUN: sqlcmd commands to execute")
 
     for script in scripts:
-        cmd = base_cmd + ["-i", str(script)]
         print(f"\n==> {script.name}")
+
+        if script.name in BEST_EFFORT_SCRIPTS:
+            _run_views_best_effort(
+                sqlcmd_path, server, database, auth_args, script, dry_run, hide_password
+            )
+            continue
+
+        cmd = base_cmd + ["-i", str(script)]
         print(format_command_for_log(cmd, hide_password=hide_password))
 
         if dry_run:
@@ -237,6 +250,68 @@ def run_plan(
             raise RuntimeError(
                 f"sqlcmd failed for {script.name} with exit code {result.returncode}{hint}"
             )
+
+
+def _run_views_best_effort(
+    sqlcmd_path: str,
+    server: str,
+    database: str,
+    auth_args: list[str],
+    views_script: Path,
+    dry_run: bool,
+    hide_password: bool,
+) -> None:
+    """Execute each view statement individually, reporting failures but continuing."""
+    import tempfile
+
+    content = views_script.read_text(encoding="utf-8")
+
+    # Split on GO boundaries (case-insensitive, whole line)
+    blocks = re.split(r"(?im)^GO\s*$", content)
+
+    # Filter to non-empty blocks that contain a CREATE statement
+    view_blocks = [b.strip() for b in blocks if re.search(r"\bCREATE\b", b, re.IGNORECASE)]
+
+    failed: list[str] = []
+    succeeded = 0
+
+    base_cmd = [sqlcmd_path, "-S", server, "-d", database, "-b", "-I"] + auth_args
+
+    for block in view_blocks:
+        # Extract view name for logging
+        m = re.search(r"CREATE\s+OR\s+ALTER\s+VIEW\s+(\S+)", block, re.IGNORECASE)
+        view_name = m.group(1) if m else "unknown"
+        print(f"  Creating view {view_name} ...", end=" ")
+
+        if dry_run:
+            print("(dry run)")
+            continue
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".sql", delete=False, encoding="utf-8"
+        ) as tmp:
+            tmp.write(block)
+            tmp_path = tmp.name
+
+        try:
+            cmd = base_cmd + ["-i", tmp_path]
+            result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            if result.returncode == 0:
+                print("OK")
+                succeeded += 1
+            else:
+                err = ((result.stdout or "") + (result.stderr or "")).strip().splitlines()
+                first_err = err[0] if err else "unknown error"
+                print(f"FAILED — {first_err}")
+                failed.append(f"{view_name}: {first_err}")
+        finally:
+            os.unlink(tmp_path)
+
+    print(f"\n  Views: {succeeded} created, {len(failed)} skipped/failed")
+    if failed:
+        print("  Failed views (require manual conversion):")
+        for f in failed:
+            print(f"    - {f}")
 
 
 def main() -> None:
