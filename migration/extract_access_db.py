@@ -185,6 +185,135 @@ DAO_QUERY_TYPE_NAMES: dict[int, str] = {
 
 VIEW_QUERY_TYPES = {0, 16}  # Types that can become SQL views
 
+# ── Access → T-SQL conversion helpers ────────────────────────────────────────
+
+_ACCESS_DATEADD_MAP: dict[str, str] = {
+    "yyyy": "year",
+    "q": "quarter",
+    "m": "month",
+    "y": "dayofyear",
+    "d": "day",
+    "w": "weekday",
+    "ww": "week",
+    "h": "hour",
+    "n": "minute",
+    "s": "second",
+}
+
+
+def _strip_order_by_if_no_top(sql: str) -> str:
+    """Remove trailing ORDER BY when the SELECT has no TOP clause (invalid in T-SQL views)."""
+    sel = re.search(r"\bSELECT\b", sql, re.IGNORECASE)
+    if sel:
+        after = sql[sel.end() : sel.end() + 40]
+        if re.match(r"\s+TOP\b", after, re.IGNORECASE):
+            return sql  # TOP present — ORDER BY is valid
+    depth, last_pos, i, n = 0, -1, 0, len(sql)
+    while i < n:
+        c = sql[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif depth == 0:
+            if re.match(r"ORDER\s+BY\b", sql[i:], re.IGNORECASE):
+                last_pos = i
+        i += 1
+    return sql[:last_pos].rstrip() if last_pos >= 0 else sql
+
+
+def access_sql_to_tsql(sql: str) -> tuple[str, list[str]]:
+    """
+    Best-effort conversion of Access SQL to T-SQL for SQL Server / Fabric SQL.
+    Returns (converted_sql, list_of_notes).
+    """
+    notes: list[str] = []
+
+    # 1. Replace Access ! field-separator with .  (preserve != operator)
+    sql = re.sub(r"!(?!=)", ".", sql)
+
+    # 2. PlainText(expr) — custom Access VBA function; use expr directly
+    sql = re.sub(r"\bPlainText\s*\(([^)]+)\)", r"\1", sql, flags=re.IGNORECASE)
+
+    # 3. Trim$(expr) → TRIM(expr)
+    sql = re.sub(r"\bTrim\$\s*\(", "TRIM(", sql, flags=re.IGNORECASE)
+
+    # 4. Date() → CAST(GETDATE() AS DATE)
+    sql = re.sub(r"\bDate\(\s*\)", "CAST(GETDATE() AS DATE)", sql, flags=re.IGNORECASE)
+
+    # 5. DateValue(expr) → CAST(expr AS DATE)
+    sql = re.sub(r"\bDateValue\s*\(([^)]+)\)", r"CAST(\1 AS DATE)", sql, flags=re.IGNORECASE)
+
+    # 6. DateAdd("unit", n, expr) → DATEADD(unit, n, expr)
+    def _replace_dateadd(m: re.Match) -> str:
+        unit = m.group(1).strip("\"'").lower()
+        tsql_unit = _ACCESS_DATEADD_MAP.get(unit, unit)
+        return f"DATEADD({tsql_unit}, {m.group(2).strip()}, {m.group(3).strip()})"
+
+    sql = re.sub(
+        r"""\bDateAdd\s*\(\s*(["'][^"']+["'])\s*,\s*([^,]+?)\s*,\s*([^)]+?)\s*\)""",
+        _replace_dateadd,
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+    # 7. Format(expr, "fmt") — map Access/VBA format strings to T-SQL equivalents
+    def _replace_format(m: re.Match) -> str:
+        expr = m.group(1).strip()
+        fmt = m.group(2).strip("\"'").lower()
+        if fmt == "ww":
+            return f"CAST(DATEPART(week, {expr}) AS VARCHAR)"
+        if fmt == "q-yyyy":
+            return f"(CAST(DATEPART(quarter, {expr}) AS VARCHAR) + '-' + FORMAT({expr}, 'yyyy'))"
+        if fmt == "mmm-yyyy":
+            return f"FORMAT({expr}, 'MMM-yyyy')"
+        if fmt == "yyyy-mm":
+            return f"FORMAT({expr}, 'yyyy-MM')"
+        tsql_fmt = fmt.replace("mmmm", "MMMM").replace("mmm", "MMM").replace("mm", "MM")
+        notes.append(f"Format() '{fmt}' → FORMAT(..., '{tsql_fmt}') — verify output")
+        return f"FORMAT({expr}, '{tsql_fmt}')"
+
+    sql = re.sub(
+        r"""\bFormat\s*\(\s*([^,]+?)\s*,\s*(["'][^"']+["'])\s*\)""",
+        _replace_format,
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+    # 8. Remove ORDER BY when the view SELECT has no TOP (illegal in T-SQL views)
+    sql = _strip_order_by_if_no_top(sql)
+
+    return sql, notes
+
+
+def _sort_views_topologically(views: list[dict]) -> list[dict]:
+    """Return views sorted so each view is created after all views it references."""
+    names = {v["name"] for v in views}
+    by_name = {v["name"]: v for v in views}
+    deps: dict[str, set[str]] = {}
+    for v in views:
+        sql_upper = v["sql"].upper()
+        deps[v["name"]] = {
+            n for n in names
+            if n != v["name"] and re.search(r"\b" + re.escape(n.upper()) + r"\b", sql_upper)
+        }
+    in_degree = {n: len(d) for n, d in deps.items()}
+    queue: deque[str] = deque(n for n, d in in_degree.items() if d == 0)
+    ordered: list[str] = []
+    while queue:
+        node = queue.popleft()
+        ordered.append(node)
+        for n, d in deps.items():
+            if node in d:
+                d.discard(node)
+                in_degree[n] -= 1
+                if in_degree[n] == 0:
+                    queue.append(n)
+    for n in names:  # append any remaining (cyclic — unlikely for views)
+        if n not in ordered:
+            ordered.append(n)
+    return [by_name[n] for n in ordered]
+
 
 def get_dao_queries(db_path: Path) -> list[dict]:
     """Use DAO via win32com to extract saved query names, types, and SQL text."""
@@ -491,12 +620,17 @@ def build_create_table_sql(
         pk_cols = ", ".join(sanitize_identifier(pk) for pk in primary_keys)
         col_lines.append(f"    CONSTRAINT [PK_{table_name}] PRIMARY KEY ({pk_cols})")
 
-    return "\n".join(
+    create_body = "\n".join(
         [
             f"CREATE TABLE {sanitize_identifier(table_name)} (",
             ",\n".join(col_lines),
             ");",
         ]
+    )
+    return (
+        f"IF OBJECT_ID(N'{sanitize_identifier(table_name)}', N'U') IS NULL\nBEGIN\n"
+        + create_body
+        + "\nEND"
     )
 
 
@@ -672,11 +806,25 @@ def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
             )
             fk_statements.append(fk_sql)
 
+        col_type_map = {col["name"]: access_type_to_tsql(col) for col in columns}
+
         pk_index_names = {f"PK_{table_name}"}
         for idx in indexes:
             if idx["name"] in pk_index_names:
                 continue
             if not idx["columns"]:
+                continue
+            # Skip indexes on LOB columns — SQL Server cannot use MAX/binary types as index keys
+            lob_cols = [
+                c for c in idx["columns"]
+                if "MAX" in col_type_map.get(c, "").upper()
+                or col_type_map.get(c, "").upper() == "XML"
+            ]
+            if lob_cols:
+                index_statements.append(
+                    f"-- SKIPPED index [{idx['name']}] on [{table_name}]: "
+                    f"column(s) {lob_cols} have LOB/MAX type, not valid as index key in T-SQL"
+                )
                 continue
             unique_kw = "UNIQUE " if idx["unique"] else ""
             cols = ", ".join(sanitize_identifier(c) for c in idx["columns"])
@@ -764,19 +912,32 @@ def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
 
     if view_queries:
         views_path = output_dir / "05_views.sql"
+        sorted_views = _sort_views_topologically(view_queries)
         with open(views_path, "w", encoding="utf-8") as f:
             f.write(
                 "-- Saved Queries exported as Views\n"
                 "-- Source: Access saved SELECT/UNION queries\n"
-                "-- WARNING: Access SQL syntax may differ from T-SQL.\n"
-                "--   Review each view before running — IIF(), Format(), #date# literals,\n"
-                "--   and other Access-specific functions will need manual adaptation.\n\n"
+                "-- Access SQL automatically converted to T-SQL.\n"
+                "-- Views referencing Access form controls are commented out below.\n\n"
             )
-            for q in view_queries:
+            for q in sorted_views:
+                if re.search(r"\[forms\]", q["sql"], re.IGNORECASE):
+                    f.write(
+                        f"-- SKIPPED: {q['name']}\n"
+                        "-- Reason: references Access form controls — cannot be a SQL view.\n"
+                        "-- Convert manually to a stored procedure or parameterised query.\n"
+                        "-- Original Access SQL:\n/*\n"
+                    )
+                    f.write(q["sql"])
+                    f.write("\n*/\n\n")
+                    continue
+                converted_sql, conv_notes = access_sql_to_tsql(q["sql"])
                 f.write(f"-- Query type: {q['type_name']}\n")
+                for note in conv_notes:
+                    f.write(f"-- Note: {note}\n")
                 f.write(f"CREATE VIEW {sanitize_identifier(q['name'])} AS\n")
-                f.write(q["sql"])
-                if not q["sql"].endswith(";"):
+                f.write(converted_sql)
+                if not converted_sql.endswith(";"):
                     f.write(";")
                 f.write("\nGO\n\n")
         print(f"  Written: {views_path}")
