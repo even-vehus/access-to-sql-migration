@@ -21,8 +21,17 @@ def parse_args() -> argparse.Namespace:
             "Execute generated SQL migration files against Microsoft Fabric SQL Database via sqlcmd."
         )
     )
-    parser.add_argument("--server", required=True, help="Fabric SQL endpoint host name")
-    parser.add_argument("--database", required=True, help="Target Fabric SQL database name")
+    parser.add_argument(
+        "--connection-string",
+        default=None,
+        metavar="CS",
+        help=(
+            "ADO.NET connection string (from Fabric portal). "
+            "Overrides --server and --database when provided."
+        ),
+    )
+    parser.add_argument("--server", default=None, help="Fabric SQL endpoint host name")
+    parser.add_argument("--database", default=None, help="Target Fabric SQL database name")
     parser.add_argument(
         "--db-name",
         default=None,
@@ -66,6 +75,25 @@ def parse_args() -> argparse.Namespace:
         help="Print commands without executing sqlcmd",
     )
     return parser.parse_args()
+
+
+def parse_connection_string(cs: str) -> tuple[str, str]:
+    """Parse an ADO.NET connection string and return (server, database)."""
+    parts: dict[str, str] = {}
+    for segment in cs.split(";"):
+        segment = segment.strip()
+        if "=" in segment:
+            key, _, value = segment.partition("=")
+            parts[key.strip().lower()] = value.strip()
+
+    server = parts.get("data source") or parts.get("server") or parts.get("address")
+    database = parts.get("initial catalog") or parts.get("database")
+
+    if not server:
+        raise ValueError("Connection string missing 'Data Source' / 'Server'")
+    if not database:
+        raise ValueError("Connection string missing 'Initial Catalog' / 'Database'")
+    return server, database
 
 
 def detect_sqlcmd_binary() -> str:
@@ -196,15 +224,32 @@ def run_plan(
         if dry_run:
             continue
 
-        result = subprocess.run(cmd, check=False)
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="")
         if result.returncode != 0:
+            hint = ""
+            combined = (result.stdout or "") + (result.stderr or "")
+            if "Cannot open server" in combined or "login failed" in combined.lower():
+                hint = " (check that --database matches the exact Fabric database name/ID)"
             raise RuntimeError(
-                f"sqlcmd failed for {script.name} with exit code {result.returncode}"
+                f"sqlcmd failed for {script.name} with exit code {result.returncode}{hint}"
             )
 
 
 def main() -> None:
     args = parse_args()
+
+    if args.connection_string:
+        args.server, args.database = parse_connection_string(args.connection_string)
+        print(f"Parsed connection string → server: {args.server}  database: {args.database}")
+    elif not args.server or not args.database:
+        raise SystemExit(
+            "error: --server and --database are required unless --connection-string is provided"
+        )
+
     base_output_dir = Path(args.output_dir).resolve()
 
     if not base_output_dir.exists() or not base_output_dir.is_dir():
