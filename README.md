@@ -89,11 +89,11 @@ This project is designed for **Microsoft Fabric SQL Database**.
 - `03_indexes.sql` (create indexes)
 - `02_foreign_keys.sql` (optional, run last if generated)
 
-### Automated deploy script
+### Deploy to Fabric
 
-Use the included deploy helper to run the generated scripts in the correct order and support passwordless Entra (Azure) sign-in.
+push_to_fabric.py can be used to run the generated scripts to push data to a selected fabric SQL database.
 
-Run from the repo root using the project venv Python:
+Run from the repo root using the project venv Python (make sure you are signed in with an Entra ID that has access to the SQL Database you are pushing to):
 
 ```powershell
 python deploy/push_to_fabric.py `
@@ -107,4 +107,3 @@ Options of note:
 - `--auth password` (fallback): uses `--username` and `FABRIC_SQL_PASSWORD` env var; avoid when possible
 
 See `deploy/push_to_fabric.py` for full flags and behavior.
-
