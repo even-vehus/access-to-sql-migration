@@ -115,6 +115,39 @@ If foreign keys were generated, also run:
 sqlcmd -S "<fabric-sql-endpoint>" -d "<database-name>" -U "<user>" -P "<password>" -i ".\migration_output\<YourDatabase>\02_foreign_keys.sql"
 ```
 
+### Option C: Automated deploy script
+
+Use the included deploy helper to run the generated scripts in the correct order and support passwordless Entra (Azure) sign-in.
+
+Examples (run from the repo root using the project venv Python):
+
+Dry run — show commands without executing:
+
+```powershell
+& .\.venv\Scripts\python.exe deploy\push_to_fabric.py \
+  --server "<fabric-endpoint>" \
+  --database "<database-name>" \
+  --db-name "<YourDatabase>" \
+  --dry-run
+```
+
+Interactive deploy (passwordless Entra login; may open browser for sign-in):
+
+```powershell
+& .\.venv\Scripts\python.exe deploy\push_to_fabric.py \
+  --server "<fabric-endpoint>" \
+  --database "<database-name>" \
+  --db-name "<YourDatabase>"
+```
+
+Options of note:
+- `--include-views`: also run `05_views.sql` (only if you've reviewed/translated Access SQL to T-SQL)
+- `--skip-fk`: skip `02_foreign_keys.sql`
+- `--auth password` (fallback): uses `--username` and `FABRIC_SQL_PASSWORD` env var; avoid when possible
+
+See `deploy/push_to_fabric.py` for full flags and behavior.
+
+
 ## Notes
 
 - By default ADOX is disabled to avoid COM/OLEDB stability issues.
