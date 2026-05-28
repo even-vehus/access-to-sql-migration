@@ -93,9 +93,7 @@ This project is designed for **Microsoft Fabric SQL Database**.
 
 Use the included deploy helper to run the generated scripts in the correct order and support passwordless Entra (Azure) sign-in.
 
-Examples (run from the repo root using the project venv Python):
-
-Dry run — show commands without executing:
+Run from the repo root using the project venv Python:
 
 ```powershell
 python deploy/push_to_fabric.py `
@@ -109,5 +107,4 @@ Options of note:
 - `--auth password` (fallback): uses `--username` and `FABRIC_SQL_PASSWORD` env var; avoid when possible
 
 See `deploy/push_to_fabric.py` for full flags and behavior.
-
 
