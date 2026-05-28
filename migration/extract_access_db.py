@@ -169,6 +169,103 @@ def get_adox_schema(db_path: Path) -> dict:
     return schema
 
 
+DAO_QUERY_TYPE_NAMES: dict[int, str] = {
+    0: "SELECT",
+    16: "UNION",
+    32: "CROSSTAB",
+    48: "DELETE",
+    64: "UPDATE",
+    80: "APPEND",
+    96: "MAKE-TABLE",
+    112: "DDL",
+    128: "PASS-THROUGH",
+    160: "PROCEDURE",
+    240: "DATA-DEFINITION",
+}
+
+VIEW_QUERY_TYPES = {0, 16}  # Types that can become SQL views
+
+
+def get_dao_queries(db_path: Path) -> list[dict]:
+    """Use DAO via win32com to extract saved query names, types, and SQL text."""
+    if not HAS_WIN32COM:
+        return []
+    db = None
+    try:
+        dao_engine = win32com.client.Dispatch("DAO.DBEngine.120")
+        db = dao_engine.OpenDatabase(str(db_path))
+        queries = []
+        for qdef in db.QueryDefs:
+            name = qdef.Name
+            if name.startswith("~") or name.startswith("MSys"):
+                continue
+            try:
+                type_id = int(qdef.Type)
+                sql_text = qdef.SQL or ""
+            except Exception:
+                continue
+            queries.append(
+                {
+                    "name": name,
+                    "sql": sql_text.strip(),
+                    "type_id": type_id,
+                    "type_name": DAO_QUERY_TYPE_NAMES.get(type_id, f"UNKNOWN({type_id})"),
+                }
+            )
+        return queries
+    except Exception as e:
+        print(f"  [DAO warning] {e}")
+        return []
+    finally:
+        if db is not None:
+            try:
+                db.Close()
+            except Exception:
+                pass
+
+
+def get_linked_tables(conn, db_path: Path) -> list[dict]:
+    """Detect linked tables (external data sources) in the Access database."""
+    # Try ADOX first — gives us the datasource connection string
+    if HAS_WIN32COM and os.getenv("ACCESS_USE_ADOX", "1") == "1":
+        try:
+            cat = win32com.client.Dispatch("ADOX.Catalog")
+            cat.ActiveConnection = f"Provider=Microsoft.ACE.OLEDB.12.0;Data Source={db_path};"
+            linked = []
+            for table in cat.Tables:
+                if table.Name.startswith("MSys"):
+                    continue
+                if table.Type != "LINK":
+                    continue
+                entry: dict = {"name": table.Name}
+                for prop_name in (
+                    "Jet OLEDB:Link Datasource",
+                    "Jet OLEDB:Link Provider String",
+                    "Jet OLEDB:Remote Table Name",
+                ):
+                    try:
+                        entry[prop_name] = table.Properties(prop_name).Value
+                    except Exception:
+                        pass
+                linked.append(entry)
+            return linked
+        except Exception as e:
+            print(f"  [linked tables ADOX warning] {e}")
+
+    # Fallback: pyodbc — linked tables typically appear with table_type != "TABLE"
+    linked = []
+    cursor = conn.cursor()
+    try:
+        for row in cursor.tables():
+            if row.table_name.startswith("MSys"):
+                continue
+            if row.table_type not in ("TABLE", "VIEW", "SYSTEM TABLE", ""):
+                linked.append({"name": row.table_name, "type": row.table_type})
+    except Exception:
+        pass
+    return linked
+
+
 def sanitize_identifier(name: str) -> str:
     return f"[{name}]"
 
@@ -506,10 +603,29 @@ def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
     else:
         print("  ADOX unavailable, falling back to pyodbc types only")
 
+    print("Reading DAO queries...")
+    dao_queries = get_dao_queries(db_path)
+    if dao_queries:
+        print(f"  Found {len(dao_queries)} saved queries")
+    else:
+        print("  No saved queries found (or DAO unavailable)")
+
     conn = get_connection(db_path)
 
     tables = get_tables(conn)
     print(f"Found {len(tables)} tables: {tables}")
+
+    print("Checking for linked tables...")
+    linked_tables = get_linked_tables(conn, db_path)
+    if linked_tables:
+        print(f"  *** WARNING: {len(linked_tables)} linked table(s) detected — external dependencies! ***")
+        print("  These reference external data sources and will NOT be migrated automatically.")
+        for lt in linked_tables:
+            src = lt.get("Jet OLEDB:Link Datasource", "unknown source")
+            print(f"    - {lt['name']} -> {src}")
+        print()
+    else:
+        print("  No linked tables found.")
 
     schema_info = {}
     ddl_statements = []
@@ -643,6 +759,46 @@ def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
                 f.write("\n\n")
     print(f"  Written: {combined_data_path}")
 
+    view_queries = [q for q in dao_queries if q["type_id"] in VIEW_QUERY_TYPES]
+    action_queries = [q for q in dao_queries if q["type_id"] not in VIEW_QUERY_TYPES]
+
+    if view_queries:
+        views_path = output_dir / "05_views.sql"
+        with open(views_path, "w", encoding="utf-8") as f:
+            f.write(
+                "-- Saved Queries exported as Views\n"
+                "-- Source: Access saved SELECT/UNION queries\n"
+                "-- WARNING: Access SQL syntax may differ from T-SQL.\n"
+                "--   Review each view before running — IIF(), Format(), #date# literals,\n"
+                "--   and other Access-specific functions will need manual adaptation.\n\n"
+            )
+            for q in view_queries:
+                f.write(f"-- Query type: {q['type_name']}\n")
+                f.write(f"CREATE VIEW {sanitize_identifier(q['name'])} AS\n")
+                f.write(q["sql"])
+                if not q["sql"].endswith(";"):
+                    f.write(";")
+                f.write("\nGO\n\n")
+        print(f"  Written: {views_path}")
+
+    if action_queries:
+        action_path = output_dir / "06_action_queries.sql"
+        with open(action_path, "w", encoding="utf-8") as f:
+            f.write(
+                "-- Access Action Queries (reference only — not directly runnable as T-SQL)\n"
+                "-- These are DELETE, UPDATE, APPEND, MAKE-TABLE, and other non-SELECT queries.\n"
+                "-- Migrate manually as stored procedures or application logic as needed.\n\n"
+            )
+            for q in action_queries:
+                f.write(f"-- ============================================================\n")
+                f.write(f"-- Query: {q['name']}\n")
+                f.write(f"-- Type:  {q['type_name']}\n")
+                f.write(f"-- ============================================================\n")
+                f.write("/*\n")
+                f.write(q["sql"])
+                f.write("\n*/\n\n")
+        print(f"  Written: {action_path}")
+
     json_path = output_dir / "schema.json"
 
     def json_serializer(obj):
@@ -651,7 +807,16 @@ def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
         raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(schema_info, f, indent=2, default=json_serializer)
+        json.dump(
+            {
+                **schema_info,
+                "_queries": [{"name": q["name"], "type_name": q["type_name"]} for q in dao_queries],
+                "_linked_tables": linked_tables,
+            },
+            f,
+            indent=2,
+            default=json_serializer,
+        )
     print(f"  Written: {json_path}")
 
     erd_path = output_dir / "schema_summary.md"
@@ -676,6 +841,25 @@ def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
                 f.write("\n**Foreign Keys:**\n\n")
                 for fk in info["foreign_keys"]:
                     f.write(f"- {fk['fk_column']} -> {fk['pk_table']}.{fk['pk_column']}\n")
+            f.write("\n")
+
+        if linked_tables:
+            f.write(f"## Linked Tables — External Dependencies ({len(linked_tables)})\n\n")
+            f.write("> **WARNING:** These tables reference external data sources and will NOT be migrated automatically.\n\n")
+            f.write("| Table Name | Data Source | Provider |\n")
+            f.write("|------------|-------------|----------|\n")
+            for lt in linked_tables:
+                src = lt.get("Jet OLEDB:Link Datasource", "")
+                provider = lt.get("Jet OLEDB:Link Provider String", "")
+                f.write(f"| {lt['name']} | {src} | {provider} |\n")
+            f.write("\n")
+
+        if dao_queries:
+            f.write(f"## Queries ({len(dao_queries)})\n\n")
+            f.write("| Name | Type |\n")
+            f.write("|------|------|\n")
+            for q in dao_queries:
+                f.write(f"| {q['name']} | {q['type_name']} |\n")
             f.write("\n")
 
     print(f"  Written: {erd_path}")
