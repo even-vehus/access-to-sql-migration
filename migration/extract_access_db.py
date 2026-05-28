@@ -91,10 +91,10 @@ def get_connection(db_path: Path):
 
 def get_adox_schema(db_path: Path) -> dict:
     """Use ADOX via win32com to get richer schema info (AutoNumber, PKs, FKs, field types)."""
-    # ADOX can hang on some Office/ACE installations. Skip it by default and
-    # allow opt-in when a machine has stable COM/OLEDB behavior.
-    if os.getenv("ACCESS_USE_ADOX", "0") != "1":
-        print("  ADOX skipped (set ACCESS_USE_ADOX=1 to enable)")
+    # ADOX can hang on some Office/ACE installations. Enabled by default;
+    # set ACCESS_USE_ADOX=0 to disable if you experience hangs.
+    if os.getenv("ACCESS_USE_ADOX", "1") != "1":
+        print("  ADOX skipped (set ACCESS_USE_ADOX=0 to disable)")
         return {}
     if not HAS_WIN32COM:
         return {}
