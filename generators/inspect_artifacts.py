@@ -105,9 +105,8 @@ def _to_csharp_type(access_type: str, nullable: bool) -> str:
 
 
 def _to_pascal(name: str) -> str:
-    """Convert snake_case or PascalCase column names to PascalCase entity names."""
     parts = re.split(r"[_\s]+", name)
-    return "".join(p.capitalize() for p in parts)
+    return "".join(p[:1].upper() + p[1:] for p in parts if p)
 
 
 # ---------------------------------------------------------------------------
