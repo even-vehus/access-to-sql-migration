@@ -1,0 +1,53 @@
+{
+  "_comment": "Optional curation overrides for inspect_artifacts.py. Everything here is a product decision a heuristic can't infer; remove a key to fall back to the structural default. Auto-loaded for db-name 'NorthwindStarterED'.",
+
+  "title": "Northwind Modernization",
+
+  "entity_scope": {
+    "Companies": "v1_core",
+    "Contacts": "v1_core",
+    "Products": "v1_core",
+    "Orders": "v1_core",
+    "OrderDetails": "v1_core",
+
+    "CompanyTypes": "v1_support",
+    "States": "v1_support",
+    "TaxStatus": "v1_support",
+    "Titles": "v1_support",
+    "Employees": "v1_support",
+    "Privileges": "v1_support",
+    "EmployeePrivileges": "v1_support",
+    "ProductCategories": "v1_support",
+    "OrderStatus": "v1_support",
+    "OrderDetailStatus": "v1_support",
+
+    "PurchaseOrders": "later",
+    "PurchaseOrderDetails": "later",
+    "PurchaseOrderStatus": "later",
+    "ProductVendors": "later",
+    "StockTake": "later",
+    "MRU": "later"
+  },
+
+  "routes": {
+    "frmLogin": "/login",
+    "frmAdmin": "/admin",
+    "frmWelcome": null,
+    "frmLearn": null,
+    "frmNorthwindFeatures": null
+  },
+
+  "csharp_class": {
+    "modOrders": "OrderService",
+    "modInventory": "InventoryService",
+    "modPurchaseOrders": "PurchaseOrderService",
+    "modValidation": "ValidationService",
+    "modCompanies": "CompanyService",
+    "modMath": "MathHelper",
+    "modSecurity": "SecurityService",
+    "modStrings": "StringHelper",
+    "clsErrorHandler": "ErrorHandler",
+    "modTableDataMacros": "TableDataService",
+    "modReportParameters": "ReportParameterService"
+  }
+}

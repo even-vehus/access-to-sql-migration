@@ -20,6 +20,7 @@ import threading
 from pathlib import Path
 
 import win32com.client
+import win32process
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -93,8 +94,9 @@ RE_EXTERNAL_REF = re.compile(
     r"\b(CreateObject|GetObject|Shell)\b", re.IGNORECASE
 )
 
-# Global reference for cleanup
+# Global references for cleanup / scoped process termination
 _access_app = None
+_access_pid: int | None = None
 
 # Timeout for individual COM operations (seconds)
 COM_TIMEOUT = 30
@@ -120,14 +122,24 @@ def _run_with_timeout(func, timeout: int = COM_TIMEOUT):
     t.join(timeout)
 
     if t.is_alive():
-        # The COM call is hung — kill Access to unblock
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "MSACCESS.EXE"],
-                capture_output=True,
+        # The COM call is hung (Access likely raised a modal dialog).
+        # Terminate ONLY the instance we launched — never a broad image kill,
+        # which would destroy other Access windows the user has open with
+        # unsaved work. /T also reaps any child processes of that PID.
+        if _access_pid:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(_access_pid)],
+                    capture_output=True,
+                )
+            except Exception:
+                pass
+        else:
+            print(
+                "  [warning] Access COM call hung but its PID is unknown; "
+                "skipping process kill to avoid terminating unrelated Access "
+                "instances. An orphaned MSACCESS.EXE may remain - close it manually."
             )
-        except Exception:
-            pass
         raise COMTimeoutError(
             f"COM operation timed out after {timeout}s (Access likely showed a modal dialog)"
         )
@@ -235,21 +247,42 @@ def resolve_output_dir(
 
 def _cleanup_access_app():
     """atexit handler — kill orphaned Access process if script crashes."""
-    global _access_app
+    global _access_app, _access_pid
     if _access_app is not None:
         try:
             _access_app.Quit()
         except Exception:
             pass
         _access_app = None
+    _access_pid = None
 
 
 atexit.register(_cleanup_access_app)
 
 
+def _get_access_pid(app) -> int | None:
+    """Resolve the OS process ID of the Access instance behind this COM app.
+
+    Uses the main Access window handle so the timeout watchdog can terminate
+    only the instance we launched — never other Access windows the user may
+    have open. Returns None if it can't be determined.
+    """
+    try:
+        hwnd = int(app.hWndAccessApp)
+    except Exception:
+        return None
+    if not hwnd:
+        return None
+    try:
+        _thread_id, pid = win32process.GetWindowThreadProcessId(hwnd)
+        return int(pid) or None
+    except Exception:
+        return None
+
+
 def open_access_app(db_path: Path, password: str | None = None):
     """Open an Access database via COM and return the Application object."""
-    global _access_app
+    global _access_app, _access_pid
     app = win32com.client.Dispatch("Access.Application")
     # Assign to global only after object creation, before DB open.
     # The atexit handler will call Quit() if the script crashes here.
@@ -272,12 +305,16 @@ def open_access_app(db_path: Path, password: str | None = None):
     except Exception:
         pass
 
+    # Capture the PID now, while Access is healthy, so the timeout watchdog can
+    # later kill only this instance (not every MSACCESS.EXE on the machine).
+    _access_pid = _get_access_pid(app)
+
     return app
 
 
 def close_access_app(app) -> None:
     """Safely close the Access COM application."""
-    global _access_app
+    global _access_app, _access_pid
     try:
         app.CloseCurrentDatabase()
     except Exception:
@@ -287,6 +324,7 @@ def close_access_app(app) -> None:
     except Exception:
         pass
     _access_app = None
+    _access_pid = None
 
 
 # ---------------------------------------------------------------------------
