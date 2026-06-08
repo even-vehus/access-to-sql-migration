@@ -447,7 +447,16 @@ def get_linked_tables(conn, db_path: Path) -> list[dict]:
 
 
 def sanitize_identifier(name: str) -> str:
-    return f"[{name}]"
+    """Bracket-quote a T-SQL identifier, doubling any embedded ] so names
+    containing ']', spaces, or reserved words can't break out of the brackets."""
+    return "[" + str(name).replace("]", "]]") + "]"
+
+
+def quote_literal(text: str) -> str:
+    """Render a value as a Unicode T-SQL string literal (N'...'), doubling
+    embedded single quotes. Use whenever an identifier/name is embedded in a
+    string context such as OBJECT_ID(...) or a sys.* catalog name comparison."""
+    return "N'" + str(text).replace("'", "''") + "'"
 
 
 def escape_sql_string(value) -> str:
@@ -669,7 +678,9 @@ def build_create_table_sql(
 
     if primary_keys:
         pk_cols = ", ".join(sanitize_identifier(pk) for pk in primary_keys)
-        col_lines.append(f"    CONSTRAINT [PK_{table_name}] PRIMARY KEY ({pk_cols})")
+        col_lines.append(
+            f"    CONSTRAINT {sanitize_identifier('PK_' + table_name)} PRIMARY KEY ({pk_cols})"
+        )
 
     create_body = "\n".join(
         [
@@ -679,7 +690,7 @@ def build_create_table_sql(
         ]
     )
     return (
-        f"IF OBJECT_ID(N'{sanitize_identifier(table_name)}', N'U') IS NULL\nBEGIN\n"
+        f"IF OBJECT_ID({quote_literal(sanitize_identifier(table_name))}, N'U') IS NULL\nBEGIN\n"
         + create_body
         + "\nEND"
     )
@@ -858,7 +869,7 @@ def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
             fk_sql = (
                 f"IF NOT EXISTS (\n"
                 f"    SELECT 1 FROM sys.foreign_keys\n"
-                f"    WHERE name = N'{constraint_name}' AND parent_object_id = OBJECT_ID(N'{sanitize_identifier(table_name)}')\n"
+                f"    WHERE name = {quote_literal(constraint_name)} AND parent_object_id = OBJECT_ID({quote_literal(sanitize_identifier(table_name))})\n"
                 f")\n"
                 f"    ALTER TABLE {sanitize_identifier(table_name)}\n"
                 f"      ADD CONSTRAINT {sanitize_identifier(constraint_name)}\n"
@@ -903,7 +914,7 @@ def extract_database(db_path: Path, output_dir: Path, access_dir: Path):
             idx_sql = (
                 f"IF NOT EXISTS (\n"
                 f"    SELECT 1 FROM sys.indexes\n"
-                f"    WHERE name = N'{idx['name']}' AND object_id = OBJECT_ID(N'{sanitize_identifier(table_name)}')\n"
+                f"    WHERE name = {quote_literal(idx['name'])} AND object_id = OBJECT_ID({quote_literal(sanitize_identifier(table_name))})\n"
                 f")\n"
                 f"    CREATE {unique_kw}INDEX {sanitize_identifier(idx['name'])}\n"
                 f"      ON {sanitize_identifier(table_name)} ({cols}){where_clause};"
